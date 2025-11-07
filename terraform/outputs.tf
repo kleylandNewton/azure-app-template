@@ -46,17 +46,17 @@ output "acr_admin_password" {
 
 output "backend_url" {
   description = "Backend application URL"
-  value       = var.backend_enabled ? "http://${azurerm_container_group.backend[0].fqdn}:${var.backend_port}" : "Not deployed"
+  value       = var.create_containers && var.backend_enabled ? "http://${azurerm_container_group.backend[0].fqdn}:${var.backend_port}" : "Not deployed"
 }
 
 output "backend_fqdn" {
   description = "Backend FQDN"
-  value       = var.backend_enabled ? azurerm_container_group.backend[0].fqdn : "Not deployed"
+  value       = var.create_containers && var.backend_enabled ? azurerm_container_group.backend[0].fqdn : "Not deployed"
 }
 
 output "backend_ip" {
   description = "Backend IP address"
-  value       = var.backend_enabled ? azurerm_container_group.backend[0].ip_address : "Not deployed"
+  value       = var.create_containers && var.backend_enabled ? azurerm_container_group.backend[0].ip_address : "Not deployed"
 }
 
 # ============================================================================
@@ -65,17 +65,17 @@ output "backend_ip" {
 
 output "frontend_url" {
   description = "Frontend application URL"
-  value       = var.frontend_enabled ? "http://${azurerm_container_group.frontend[0].fqdn}:${var.frontend_port}" : "Not deployed"
+  value       = var.create_containers && var.frontend_enabled ? "http://${azurerm_container_group.frontend[0].fqdn}:${var.frontend_port}" : "Not deployed"
 }
 
 output "frontend_fqdn" {
   description = "Frontend FQDN"
-  value       = var.frontend_enabled ? azurerm_container_group.frontend[0].fqdn : "Not deployed"
+  value       = var.create_containers && var.frontend_enabled ? azurerm_container_group.frontend[0].fqdn : "Not deployed"
 }
 
 output "frontend_ip" {
   description = "Frontend IP address"
-  value       = var.frontend_enabled ? azurerm_container_group.frontend[0].ip_address : "Not deployed"
+  value       = var.create_containers && var.frontend_enabled ? azurerm_container_group.frontend[0].ip_address : "Not deployed"
 }
 
 # ============================================================================
