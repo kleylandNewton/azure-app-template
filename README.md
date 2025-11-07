@@ -32,14 +32,30 @@ This template automatically provisions:
 
 ### Step 1: Add GitHub Secrets
 
-Go to your repository Settings → Secrets → Actions and add:
+Go to your repository Settings → Secrets and variables → Actions and add these 4 secrets:
 
 | Secret Name | Description | How to Get |
 |------------|-------------|------------|
 | `AZURE_SUBSCRIPTION_ID` | Your Azure subscription ID | [Azure Portal](https://portal.azure.com) → Subscriptions |
 | `AZURE_TENANT_ID` | Your Azure AD tenant ID | Azure Portal → Azure Active Directory → Properties |
+| `AZURE_CLIENT_ID` | Service principal client ID | See Quick Setup below |
+| `AZURE_CLIENT_SECRET` | Service principal secret | See Quick Setup below |
 
-**Note:** The workflow will create a service principal automatically on first run, or you can create one manually.
+**Quick Setup - Run in Azure Cloud Shell:**
+
+```bash
+az ad sp create-for-rbac \
+  --name "github-actions-$(date +%s)" \
+  --role contributor \
+  --scopes /subscriptions/$(az account show --query id -o tsv) \
+  --json-auth
+```
+
+Copy the JSON output values to GitHub Secrets:
+- `clientId` → `AZURE_CLIENT_ID`
+- `clientSecret` → `AZURE_CLIENT_SECRET`
+- `subscriptionId` → `AZURE_SUBSCRIPTION_ID`
+- `tenantId` → `AZURE_TENANT_ID`
 
 ### Step 2: Configure Your App
 
@@ -69,19 +85,22 @@ environment: dev  # dev, staging, or prod
 
 ### Step 3: Add Your Application Code
 
-Place your code in these directories:
+The template includes sample Hello World apps. Replace them with your code:
 
 ```
 backend/
-  ├── Dockerfile
-  ├── requirements.txt (Python) or package.json (Node)
-  └── your-app-code/
+  ├── Dockerfile              # Update for your stack
+  ├── requirements.txt        # Python dependencies
+  └── main.py                 # Your app code
 
 frontend/  (optional)
-  ├── Dockerfile
-  ├── package.json
-  └── your-app-code/
+  ├── Dockerfile              # Update for your stack
+  ├── package.json            # Node dependencies
+  ├── package-lock.json       # Required for npm ci
+  └── server.js               # Your app code
 ```
+
+**Important:** If using Node.js, ensure `package-lock.json` exists (run `npm install` locally)
 
 ### Step 4: Deploy!
 
@@ -106,30 +125,46 @@ After deployment (10-15 minutes), check the workflow summary for:
 
 ## What Happens During Deployment
 
+The deployment uses a **two-phase approach** to ensure Docker images exist before creating containers:
+
 ```
 ┌─────────────────────────────────────────────┐
-│  1. Validate Configuration                   │
-│     ✓ Check app-config.yml                  │
-│     ✓ Verify Azure credentials              │
+│  1. Parse Configuration                      │
+│     ✓ Read app-config.yml                   │
+│     ✓ Validate settings                     │
 └─────────────────────────────────────────────┘
                     ▼
 ┌─────────────────────────────────────────────┐
-│  2. Provision Infrastructure (Terraform)     │
+│  2. Build Docker Images (locally)            │
+│     ✓ Build backend image                   │
+│     ✓ Build frontend image                  │
+└─────────────────────────────────────────────┘
+                    ▼
+┌─────────────────────────────────────────────┐
+│  3. Phase 1: Create ACR                      │
 │     ✓ Create resource group                 │
-│     ✓ Create container registry             │
-│     ✓ Create database (if enabled)          │
-│     ✓ Setup networking                      │
+│     ✓ Create container registry (ACR)       │
+│     ✓ Save Terraform state                  │
 └─────────────────────────────────────────────┘
                     ▼
 ┌─────────────────────────────────────────────┐
-│  3. Build & Deploy Application               │
-│     ✓ Build Docker images                   │
-│     ✓ Push to ACR                            │
-│     ✓ Deploy containers                     │
+│  4. Push Images to ACR                       │
+│     ✓ Tag images with ACR URL               │
+│     ✓ Push backend to ACR                   │
+│     ✓ Push frontend to ACR                  │
+└─────────────────────────────────────────────┘
+                    ▼
+┌─────────────────────────────────────────────┐
+│  5. Phase 2: Create Containers               │
+│     ✓ Restore Terraform state               │
+│     ✓ Create backend container              │
+│     ✓ Create frontend container             │
 │     ✓ Run health checks                     │
 └─────────────────────────────────────────────┘
                     ▼
             🎉 App is Live!
+
+**Duration:** 10-15 minutes total
 ```
 
 ## Project Structure
