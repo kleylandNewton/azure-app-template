@@ -1,0 +1,348 @@
+# GitHub Actions Workflow - Deploy to Azure
+# This workflow reads app-config.yml and deploys everything automatically
+
+name: Deploy to Azure
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      force_deploy:
+        description: 'Force full redeployment'
+        type: boolean
+        default: false
+
+env:
+  TERRAFORM_VERSION: '1.6.0'
+
+jobs:
+  # ============================================================================
+  # Parse Configuration
+  # ============================================================================
+
+  parse-config:
+    name: Parse Configuration
+    runs-on: ubuntu-latest
+    outputs:
+      app_name: ${{ steps.parse.outputs.app_name }}
+      region: ${{ steps.parse.outputs.region }}
+      environment: ${{ steps.parse.outputs.environment }}
+      backend_enabled: ${{ steps.parse.outputs.backend_enabled }}
+      frontend_enabled: ${{ steps.parse.outputs.frontend_enabled }}
+      database_enabled: ${{ steps.parse.outputs.database_enabled }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Parse app-config.yml
+        id: parse
+        run: |
+          echo "app_name=$(yq '.app.name' app-config.yml)" >> $GITHUB_OUTPUT
+          echo "region=$(yq '.app.region' app-config.yml)" >> $GITHUB_OUTPUT
+          echo "environment=$(yq '.environment' app-config.yml)" >> $GITHUB_OUTPUT
+          echo "backend_enabled=$(yq '.components.backend.enabled' app-config.yml)" >> $GITHUB_OUTPUT
+          echo "frontend_enabled=$(yq '.components.frontend.enabled' app-config.yml)" >> $GITHUB_OUTPUT
+          echo "database_enabled=$(yq '.components.database.enabled' app-config.yml)" >> $GITHUB_OUTPUT
+
+      - name: Validate configuration
+        run: |
+          APP_NAME=$(yq '.app.name' app-config.yml)
+          if ! [[ "$APP_NAME" =~ ^[a-z0-9]{3,15}$ ]]; then
+            echo "❌ Error: app.name must be 3-15 lowercase letters/numbers only"
+            exit 1
+          fi
+          echo "✅ Configuration valid"
+
+  # ============================================================================
+  # Build Docker Images (if components exist)
+  # ============================================================================
+
+  build-images:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: parse-config
+    if: needs.parse-config.outputs.backend_enabled == 'true' || needs.parse-config.outputs.frontend_enabled == 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Check for Dockerfiles
+        id: check
+        run: |
+          echo "backend_exists=$([ -f backend/Dockerfile ] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+          echo "frontend_exists=$([ -f frontend/Dockerfile ] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+
+      - name: Build backend image (local)
+        if: steps.check.outputs.backend_exists == 'true' && needs.parse-config.outputs.backend_enabled == 'true'
+        run: |
+          docker build -t app-backend:latest ./backend
+          echo "✅ Backend image built successfully"
+
+      - name: Build frontend image (local)
+        if: steps.check.outputs.frontend_exists == 'true' && needs.parse-config.outputs.frontend_enabled == 'true'
+        run: |
+          docker build -t app-frontend:latest ./frontend
+          echo "✅ Frontend image built successfully"
+
+  # ============================================================================
+  # Provision Infrastructure with Terraform
+  # ============================================================================
+
+  terraform-apply:
+    name: Provision Azure Infrastructure
+    runs-on: ubuntu-latest
+    needs: [parse-config, build-images]
+    if: always() && needs.parse-config.result == 'success'
+
+    outputs:
+      resource_group: ${{ steps.outputs.outputs.resource_group }}
+      acr_name: ${{ steps.outputs.outputs.acr_name }}
+      acr_login_server: ${{ steps.outputs.outputs.acr_login_server }}
+      backend_url: ${{ steps.outputs.outputs.backend_url }}
+      frontend_url: ${{ steps.outputs.outputs.frontend_url }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: |
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+            }
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Generate Terraform variables from config
+        run: |
+          cat > terraform/terraform.tfvars <<EOF
+          app_name = "${{ needs.parse-config.outputs.app_name }}"
+          location = "${{ needs.parse-config.outputs.region }}"
+          environment = "${{ needs.parse-config.outputs.environment }}"
+          backend_enabled = ${{ needs.parse-config.outputs.backend_enabled }}
+          frontend_enabled = ${{ needs.parse-config.outputs.frontend_enabled }}
+          database_enabled = ${{ needs.parse-config.outputs.database_enabled }}
+
+          backend_port = $(yq '.components.backend.port' app-config.yml)
+          backend_cpu = $(yq '.components.backend.cpu' app-config.yml)
+          backend_memory = $(yq '.components.backend.memory' app-config.yml)
+
+          frontend_port = $(yq '.components.frontend.port' app-config.yml)
+          frontend_cpu = $(yq '.components.frontend.cpu' app-config.yml)
+          frontend_memory = $(yq '.components.frontend.memory' app-config.yml)
+          EOF
+
+          echo "✅ Terraform variables generated"
+          cat terraform/terraform.tfvars
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Terraform Plan
+        working-directory: terraform
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: terraform
+        run: terraform apply -auto-approve tfplan
+
+      - name: Get Terraform Outputs
+        id: outputs
+        working-directory: terraform
+        run: |
+          echo "resource_group=$(terraform output -raw resource_group_name)" >> $GITHUB_OUTPUT
+          echo "acr_name=$(terraform output -raw acr_name)" >> $GITHUB_OUTPUT
+          echo "acr_login_server=$(terraform output -raw acr_login_server)" >> $GITHUB_OUTPUT
+          echo "backend_url=$(terraform output -raw backend_url)" >> $GITHUB_OUTPUT
+          echo "frontend_url=$(terraform output -raw frontend_url)" >> $GITHUB_OUTPUT
+
+      - name: Deployment Summary
+        run: |
+          echo "## Infrastructure Provisioned ✅" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Resource Group**: ${{ steps.outputs.outputs.resource_group }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Container Registry**: ${{ steps.outputs.outputs.acr_login_server }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Backend URL**: ${{ steps.outputs.outputs.backend_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Frontend URL**: ${{ steps.outputs.outputs.frontend_url }}" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================================
+  # Build and Push to ACR
+  # ============================================================================
+
+  push-to-acr:
+    name: Push Images to ACR
+    runs-on: ubuntu-latest
+    needs: terraform-apply
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: |
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+            }
+
+      - name: Login to ACR
+        run: az acr login --name ${{ needs.terraform-apply.outputs.acr_name }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Check for application code
+        id: check
+        run: |
+          echo "backend_exists=$([ -f backend/Dockerfile ] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+          echo "frontend_exists=$([ -f frontend/Dockerfile ] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+
+      - name: Build and push backend
+        if: steps.check.outputs.backend_exists == 'true'
+        run: |
+          docker build -t ${{ needs.terraform-apply.outputs.acr_login_server }}/app-backend:latest ./backend
+          docker push ${{ needs.terraform-apply.outputs.acr_login_server }}/app-backend:latest
+          echo "✅ Backend image pushed"
+
+      - name: Build and push frontend
+        if: steps.check.outputs.frontend_exists == 'true'
+        run: |
+          docker build -t ${{ needs.terraform-apply.outputs.acr_login_server }}/app-frontend:latest ./frontend
+          docker push ${{ needs.terraform-apply.outputs.acr_login_server }}/app-frontend:latest
+          echo "✅ Frontend image pushed"
+
+      - name: Create placeholder images if needed
+        run: |
+          # If backend directory doesn't exist, create a simple placeholder
+          if [ ! -f backend/Dockerfile ]; then
+            echo "Creating placeholder backend image..."
+            mkdir -p /tmp/backend
+            echo "FROM nginx:alpine" > /tmp/backend/Dockerfile
+            echo "RUN echo 'Placeholder backend - add your code to ./backend' > /usr/share/nginx/html/index.html" >> /tmp/backend/Dockerfile
+            docker build -t ${{ needs.terraform-apply.outputs.acr_login_server }}/app-backend:latest /tmp/backend
+            docker push ${{ needs.terraform-apply.outputs.acr_login_server }}/app-backend:latest
+          fi
+
+          # If frontend directory doesn't exist, create a simple placeholder
+          if [ ! -f frontend/Dockerfile ]; then
+            echo "Creating placeholder frontend image..."
+            mkdir -p /tmp/frontend
+            echo "FROM nginx:alpine" > /tmp/frontend/Dockerfile
+            echo "RUN echo 'Placeholder frontend - add your code to ./frontend' > /usr/share/nginx/html/index.html" >> /tmp/frontend/Dockerfile
+            docker build -t ${{ needs.terraform-apply.outputs.acr_login_server }}/app-frontend:latest /tmp/frontend
+            docker push ${{ needs.terraform-apply.outputs.acr_login_server }}/app-frontend:latest
+          fi
+
+  # ============================================================================
+  # Restart Containers
+  # ============================================================================
+
+  deploy-app:
+    name: Deploy Application
+    runs-on: ubuntu-latest
+    needs: [terraform-apply, push-to-acr]
+
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: |
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+            }
+
+      - name: Restart containers
+        run: |
+          echo "🔄 Restarting containers to pull new images..."
+
+          # List all container groups in the resource group
+          az container list \
+            --resource-group ${{ needs.terraform-apply.outputs.resource_group }} \
+            --query "[].name" -o tsv | while read container; do
+            echo "Restarting $container..."
+            az container restart \
+              --resource-group ${{ needs.terraform-apply.outputs.resource_group }} \
+              --name $container
+          done
+
+          echo "⏳ Waiting 30 seconds for containers to start..."
+          sleep 30
+
+      - name: Health checks
+        run: |
+          echo "🔍 Running health checks..."
+
+          BACKEND_URL="${{ needs.terraform-apply.outputs.backend_url }}"
+          FRONTEND_URL="${{ needs.terraform-apply.outputs.frontend_url }}"
+
+          if [ "$BACKEND_URL" != "Not deployed" ]; then
+            echo "Checking backend: $BACKEND_URL"
+            for i in {1..10}; do
+              if curl -f -s $BACKEND_URL > /dev/null 2>&1; then
+                echo "✅ Backend is healthy!"
+                break
+              fi
+              echo "Attempt $i/10..."
+              sleep 10
+            done
+          fi
+
+          if [ "$FRONTEND_URL" != "Not deployed" ]; then
+            echo "Checking frontend: $FRONTEND_URL"
+            for i in {1..10}; do
+              if curl -f -s $FRONTEND_URL > /dev/null 2>&1; then
+                echo "✅ Frontend is healthy!"
+                break
+              fi
+              echo "Attempt $i/10..."
+              sleep 10
+            done
+          fi
+
+      - name: Deployment Complete
+        run: |
+          echo "## 🎉 Deployment Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Access Your Application:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔗 **Backend**: ${{ needs.terraform-apply.outputs.backend_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔗 **Frontend**: ${{ needs.terraform-apply.outputs.frontend_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Resource Group:" >> $GITHUB_STEP_SUMMARY
+          echo "- 📦 **Name**: ${{ needs.terraform-apply.outputs.resource_group }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "View resources in [Azure Portal](https://portal.azure.com/#@/resource/subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${{ needs.terraform-apply.outputs.resource_group }})" >> $GITHUB_STEP_SUMMARY

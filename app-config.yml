@@ -1,0 +1,57 @@
+# Azure App Template Configuration
+# Edit this file to customize your deployment
+
+# Application Settings
+app:
+  # Base name for your app (will be made unique with random suffix)
+  # Only lowercase letters and numbers, 3-15 characters
+  name: "myapp"
+
+  # Azure region for deployment
+  # Options: uksouth, ukwest, eastus, westeurope, etc.
+  region: "uksouth"
+
+  # Project description (optional)
+  description: "My awesome application"
+
+# Components to Deploy
+components:
+  # Backend API/Service
+  backend:
+    enabled: true
+    directory: "./backend"
+    port: 8000
+    cpu: 1.0
+    memory: 1.5
+
+  # Frontend Web App (optional)
+  frontend:
+    enabled: true
+    directory: "./frontend"
+    port: 3000
+    cpu: 0.5
+    memory: 1.0
+
+  # Database (optional)
+  database:
+    enabled: true
+    type: "postgresql"  # postgresql or mysql
+    tier: "Basic"       # Basic, GeneralPurpose, or MemoryOptimized
+    storage_mb: 32768   # 32GB
+
+# Environment
+environment: "dev"  # dev, staging, or prod
+
+# Custom Environment Variables (optional)
+# These will be available to your containers
+environment_variables:
+  # Add your environment variables here
+  # Example:
+  # API_VERSION: "v1"
+  # DEBUG: "false"
+
+# Tags for Azure resources (optional)
+tags:
+  project: "template-deployment"
+  managed_by: "github-actions"
+  # Add more tags as needed

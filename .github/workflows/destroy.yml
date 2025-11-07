@@ -1,0 +1,69 @@
+# Destroy Infrastructure Workflow
+# Use this to clean up Azure resources and save costs
+
+name: Destroy Azure Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "DESTROY" to confirm deletion'
+        required: true
+        type: string
+
+jobs:
+  destroy:
+    name: Destroy Infrastructure
+    runs-on: ubuntu-latest
+    if: github.event.inputs.confirm == 'DESTROY'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.6.0'
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: |
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+            }
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Generate Terraform variables
+        run: |
+          cat > terraform/terraform.tfvars <<EOF
+          app_name = "$(yq '.app.name' app-config.yml)"
+          location = "$(yq '.app.region' app-config.yml)"
+          environment = "$(yq '.environment' app-config.yml)"
+          backend_enabled = $(yq '.components.backend.enabled' app-config.yml)
+          frontend_enabled = $(yq '.components.frontend.enabled' app-config.yml)
+          database_enabled = $(yq '.components.database.enabled' app-config.yml)
+          EOF
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Terraform Destroy
+        working-directory: terraform
+        run: terraform destroy -auto-approve
+
+      - name: Destruction Complete
+        run: |
+          echo "## 🗑️ Infrastructure Destroyed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "All Azure resources have been deleted." >> $GITHUB_STEP_SUMMARY
+          echo "Re-run the deploy workflow to recreate them." >> $GITHUB_STEP_SUMMARY
