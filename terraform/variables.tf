@@ -33,6 +33,12 @@ variable "environment" {
 # Component Toggles
 # ============================================================================
 
+variable "create_containers" {
+  description = "Create container instances (set to false for initial deployment)"
+  type        = bool
+  default     = false
+}
+
 variable "backend_enabled" {
   description = "Deploy backend container"
   type        = bool

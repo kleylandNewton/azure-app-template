@@ -150,7 +150,7 @@ resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_azure" {
 # ============================================================================
 
 resource "azurerm_container_group" "backend" {
-  count               = var.backend_enabled ? 1 : 0
+  count               = var.create_containers && var.backend_enabled ? 1 : 0
   name                = local.backend_name
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
@@ -198,7 +198,7 @@ resource "azurerm_container_group" "backend" {
 # ============================================================================
 
 resource "azurerm_container_group" "frontend" {
-  count               = var.frontend_enabled ? 1 : 0
+  count               = var.create_containers && var.frontend_enabled ? 1 : 0
   name                = local.frontend_name
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
