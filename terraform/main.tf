@@ -179,19 +179,15 @@ resource "azurerm_container_group" "backend" {
       {
         PORT        = tostring(var.backend_port)
         ENVIRONMENT = var.environment
-      }
-    )
-
-    # Database connection if enabled
-    dynamic "environment_variables" {
-      for_each = var.database_enabled ? [1] : []
-      content {
+      },
+      # Database connection if enabled
+      var.database_enabled ? {
         DATABASE_HOST     = azurerm_postgresql_flexible_server.main[0].fqdn
         DATABASE_NAME     = local.db_name
         DATABASE_USER     = "sqladmin"
         DATABASE_PASSWORD = random_password.db_password[0].result
-      }
-    }
+      } : {}
+    )
   }
 
   tags = local.common_tags
